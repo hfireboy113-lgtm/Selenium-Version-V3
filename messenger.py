@@ -2,23 +2,11 @@ import requests
 import time
 
 from config import BALE_TOKEN
-from buttons import scan_keyboard
+
 
 BASE_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
 MAX_LENGTH = 3500
-
-
-def send_keyboard(chat_id):
-
-    requests.post(
-        BASE_URL + "/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": "گزینه مورد نظر را انتخاب کنید:",
-            "reply_markup": scan_keyboard()
-        }
-    )
 
 
 def send_message(chat_id, text):
