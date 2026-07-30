@@ -11,6 +11,8 @@ def main():
 
     chat_id = os.getenv("CHAT_ID")
     channel_chat_id = os.getenv("CHANNEL_CHAT_ID")
+    print(f"CHAT_ID={chat_id}")
+    print(f"CHANNEL_CHAT_ID={channel_chat_id!r}")
 
     if not chat_id:
         print("CHAT_ID not found")
