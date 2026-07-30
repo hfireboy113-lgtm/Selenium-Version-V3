@@ -28,12 +28,16 @@ def send_message(chat_id, text):
 
     for part in parts:
 
-        requests.post(
+        response = requests.post(
             BASE_URL + "/sendMessage",
             json={
                 "chat_id": chat_id,
                 "text": part
             }
         )
+
+        print(f"[Bale] chat_id={chat_id}")
+        print(f"[Bale] status_code={response.status_code}")
+        print(f"[Bale] response={response.text}")
 
         time.sleep(0.5)
