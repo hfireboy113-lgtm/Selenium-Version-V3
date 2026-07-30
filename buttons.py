@@ -5,18 +5,7 @@
 def scan_keyboard():
 
     return {
-        "keyboard": [
-            [
-                {
-                    "text": "🔍 اسکن بازار"
-                }
-            ],
-            [
-                {
-                    "text": "🔄 شروع مجدد"
-                }
-            ]
-        ],
+        "keyboard": [],
         "resize_keyboard": True,
-        "is_persistent": True
+        "is_persistent": False
     }
