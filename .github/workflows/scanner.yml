@@ -2,11 +2,6 @@ name: Crypto Scanner
 
 on:
   workflow_dispatch:
-    inputs:
-      chat_id:
-        description: "Bale Chat ID"
-        required: true
-        type: string
 
 jobs:
   run-scanner:
@@ -21,10 +16,6 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Show Chat ID
-        run: |
-          echo Chat ID: ${{ github.event.inputs.chat_id }}
-
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -32,6 +23,6 @@ jobs:
       - name: Run scanner
         env:
           BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
-          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           python run.py
