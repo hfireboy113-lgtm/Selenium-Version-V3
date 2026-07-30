@@ -27,5 +27,6 @@ jobs:
         env:
           BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHANNEL_CHAT_ID: ${{ secrets.CHANNEL_CHAT_ID }}
         run: |
           python run.py
