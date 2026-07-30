@@ -3,41 +3,11 @@ import requests
 
 from config import BALE_TOKEN
 from messenger import send_message, send_keyboard
-from core.scanner import Scanner
+
 
 BASE_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
 offset = 0
-scanning = False
-
-
-def run_scan(chat_id):
-    global scanning
-
-    if scanning:
-        send_message(chat_id, "⏳ یک اسکن در حال اجراست. لطفاً منتظر بمانید.")
-        return
-
-    scanning = True
-
-    try:
-        send_message(chat_id, "⏳ در حال اسکن بازار...")
-
-        scanner = Scanner()
-
-        try:
-            output = scanner.run()
-        finally:
-            scanner.close()
-
-        send_message(chat_id, output)
-
-    except Exception as e:
-        print(e)
-        send_message(chat_id, f"❌ خطا:\n{e}")
-
-    finally:
-        scanning = False
 
 
 while True:
@@ -74,11 +44,11 @@ while True:
 
             if text == "/start":
 
-                send_keyboard(chat_id)
-
-            elif text == "🔍 اسکن بازار":
-
-                run_scan(chat_id)
+                send_message(
+                    chat_id,
+                    "✅ ربات فعال است.\n"
+                    "اسکن بازار به صورت خودکار هر ۴ ساعت انجام می‌شود."
+                )
 
         time.sleep(1)
 
