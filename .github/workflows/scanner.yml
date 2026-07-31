@@ -1,4 +1,4 @@
-- name: Debug env
+  name: Debug env
   run: |
     echo CHAT_ID=%CHAT_ID%
     echo CHANNEL_CHAT_ID=%CHANNEL_CHAT_ID%
@@ -7,7 +7,7 @@
     CHAT_ID: ${{ secrets.CHAT_ID }}
     CHANNEL_CHAT_ID: ${{ secrets.CHANNEL_CHAT_ID }}
 
-- name: Run scanner
+   name: Run scanner
   env:
     BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
     CHAT_ID: ${{ secrets.CHAT_ID }}
