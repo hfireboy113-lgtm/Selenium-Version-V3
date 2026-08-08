@@ -9,6 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 URL = "https://www.coinglass.com/"
 COINS_PER_PAGE = 3
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SYMBOL_RE = re.compile(r"^[A-Za-z0-9._-]{2,20}$")
 
 
 def snapshot(driver, name="coinglass_debug"):
@@ -20,106 +21,98 @@ def clean_value(value):
     return re.sub(r"\s+", " ", value.strip())
 
 
-def extract_coin_rows(driver):
-    """Extract (rank, coin) from the Coin/Symbol column, not by row order."""
-    table_selectors = [
-        "table",
-        "[role='table']",
-        "div[class*='table']",
-        "div[class*='Table']",
-    ]
+def extract_ranked_coins(driver):
+    """Extract (rank, symbol) from visible CoinGlass rows.
 
-    for table_selector in table_selectors:
-        tables = driver.find_elements(By.CSS_SELECTOR, table_selector)
-        for table in tables:
-            if not table.is_displayed():
-                continue
-
-            header_selectors = [
-                "thead tr th",
-                "[role='columnheader']",
-                "thead th",
-            ]
-            headers = []
-            for selector in header_selectors:
-                headers = [
-                    clean_value(x.text)
-                    for x in table.find_elements(By.CSS_SELECTOR, selector)
-                    if x.is_displayed() and clean_value(x.text)
-                ]
-                if headers:
-                    break
-
-            coin_index = None
-            for i, header in enumerate(headers):
-                normalized = re.sub(r"[^a-z]", "", header.lower())
-                if normalized in {"coin", "symbol", "coinsymbol", "coinname"}:
-                    coin_index = i
-                    break
-
-            if coin_index is None:
-                continue
-
-            row_selectors = [
-                "tbody tr",
-                "[role='row']",
-            ]
-            rows = []
-            for selector in row_selectors:
-                rows = [r for r in table.find_elements(By.CSS_SELECTOR, selector) if r.is_displayed()]
-                if rows:
-                    break
-
-            values = []
-            for row in rows:
-                cells = [
-                    clean_value(x.text)
-                    for x in row.find_elements(By.CSS_SELECTOR, "td, [role='cell']")
-                ]
-                cells = [x for x in cells if x]
-                if coin_index < len(cells):
-                    value = cells[coin_index]
-                    if value and not value.isdigit() and re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value):
-                        if value not in [coin for _, coin in values]:
-                            rank = cells[0] if cells and cells[0].isdigit() else "?"
-                            values.append((rank, value))
-
-            if values:
-                return values
-
-    # Fallback for layouts where headers are not exposed semantically.
-    selectors = [
+    We deliberately identify the ranking as a number and the coin as a
+    separate non-numeric symbol, so a page-2 ranking such as 21 can never
+    accidentally become the coin name.
+    """
+    row_selectors = [
         "table tbody tr",
+        "tr",
         "[role='row']",
-        "div[class*='table'] [class*='row']",
-        "div[class*='Table'] [class*='row']",
+        "div[class*='ant-table-row']",
+        "div[class*='table-row']",
+        "div[class*='TableRow']",
+        "div[class*='row']",
+        "div[class*='Row']",
     ]
-    for selector in selectors:
+
+    seen = set()
+
+    for selector in row_selectors:
         rows = driver.find_elements(By.CSS_SELECTOR, selector)
-        values = []
+        if not rows:
+            continue
+
+        results = []
         for row in rows:
-            if not row.is_displayed():
-                continue
-            lines = [clean_value(x) for x in row.text.splitlines() if clean_value(x)]
-            if not lines:
+            try:
+                if not row.is_displayed():
+                    continue
+                lines = [clean_value(x) for x in row.text.splitlines() if clean_value(x)]
+                if not lines:
+                    continue
+
+                rank = None
+                rank_index = None
+                for i, value in enumerate(lines[:8]):
+                    if re.fullmatch(r"\d{1,4}", value):
+                        rank = int(value)
+                        rank_index = i
+                        break
+
+                if rank is None:
+                    continue
+
+                symbol = None
+                # Prefer the first valid symbol after the rank.
+                for value in lines[(rank_index + 1):rank_index + 7]:
+                    if DATE_RE.match(value):
+                        continue
+                    if value.isdigit():
+                        continue
+                    if SYMBOL_RE.fullmatch(value):
+                        symbol = value.upper()
+                        break
+
+                if symbol is None:
+                    continue
+
+                key = (rank, symbol)
+                if key not in seen:
+                    seen.add(key)
+                    results.append(key)
+            except Exception:
                 continue
 
-            rank = lines[0] if lines[0].isdigit() else "?"
-            for value in lines[1:7]:
-                if (
-                    value
-                    and not DATE_RE.match(value)
-                    and not value.isdigit()
-                    and len(value) <= 30
-                    and re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value)
-                ):
-                    if value not in [coin for _, coin in values]:
-                        values.append((rank, value))
-                    break
-        if values:
-            return values
+        # A real table should give multiple ranked rows. Avoid returning a
+        # random unrelated numbered element from the page.
+        if len(results) >= COINS_PER_PAGE:
+            results.sort(key=lambda item: item[0])
+            return results
 
     return []
+
+
+def click_page(driver, page_number):
+    selectors = [
+        f"li.rc-pagination-item-{page_number} button",
+        f"li.rc-pagination-item[title='{page_number}'] button",
+        f"li.rc-pagination-item-{page_number}",
+    ]
+
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if el.is_displayed() and el.is_enabled():
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                    driver.execute_script("arguments[0].click();", el)
+                    return True
+            except Exception:
+                pass
+    return False
 
 
 def main():
@@ -138,47 +131,28 @@ def main():
         wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
         time.sleep(8)
 
-        page1 = extract_coin_rows(driver)
+        page1 = extract_ranked_coins(driver)
         if not page1:
             snapshot(driver)
-            raise RuntimeError("CoinGlass table was not detected")
+            raise RuntimeError("CoinGlass rows were not detected")
 
         print(f"PAGE 1 - FIRST {COINS_PER_PAGE} COINS:")
-        for rank, value in page1[:COINS_PER_PAGE]:
-            print(f"{rank}. {value}")
+        for rank, symbol in page1[:COINS_PER_PAGE]:
+            print(f"{rank}. {symbol}")
 
-        page2_selectors = [
-            "li.rc-pagination-item-2 button",
-            "li.rc-pagination-item[title='2'] button",
-            "li.rc-pagination-item-2",
-        ]
-        clicked = False
-        for selector in page2_selectors:
-            for el in driver.find_elements(By.CSS_SELECTOR, selector):
-                try:
-                    if el.is_displayed() and el.is_enabled():
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        driver.execute_script("arguments[0].click();", el)
-                        clicked = True
-                        break
-                except Exception:
-                    pass
-            if clicked:
-                break
-
-        if not clicked:
+        if not click_page(driver, 2):
             snapshot(driver, "coinglass_pagination_debug")
             raise RuntimeError("Could not find CoinGlass page 2 control")
 
         time.sleep(5)
-        page2 = extract_coin_rows(driver)
+        page2 = extract_ranked_coins(driver)
         if not page2:
             snapshot(driver, "coinglass_page2_debug")
-            raise RuntimeError("Page 2 selected, but coin rows could not be extracted")
+            raise RuntimeError("Page 2 selected, but ranked coin rows could not be extracted")
 
         print(f"PAGE 2 - FIRST {COINS_PER_PAGE} COINS:")
-        for rank, value in page2[:COINS_PER_PAGE]:
-            print(f"{rank}. {value}")
+        for rank, symbol in page2[:COINS_PER_PAGE]:
+            print(f"{rank}. {symbol}")
 
         print("TEST_STATUS=SUCCESS")
     finally:
