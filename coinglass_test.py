@@ -8,7 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 URL = "https://www.coinglass.com/"
 COINS_PER_PAGE = 3
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+RANK_RE = re.compile(r"^\d{1,4}$")
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9._-]{2,20}$")
 
 
@@ -17,99 +17,58 @@ def snapshot(driver, name="coinglass_debug"):
     driver.save_screenshot(f"{name}.png")
 
 
-def clean_value(value):
+def clean(value):
     return re.sub(r"\s+", " ", value.strip())
 
 
 def extract_ranked_coins(driver):
-    """Extract (rank, symbol) using the actual CoinGlass table columns."""
-    table_selectors = [
-        "table",
-        "[role='table']",
-        "div[class*='table']",
-        "div[class*='Table']",
-    ]
+    """Read Rank and Coin directly from the CoinGlass row/cell DOM."""
+    rows = driver.find_elements(By.CSS_SELECTOR, "tbody tr")
+    results = []
 
-    for table_selector in table_selectors:
-        tables = driver.find_elements(By.CSS_SELECTOR, table_selector)
-        for table in tables:
-            if not table.is_displayed():
+    for row in rows:
+        if not row.is_displayed():
+            continue
+
+        # CoinGlass exposes the symbol in: <div class="symbol-name">BTC</div>
+        symbol_elements = row.find_elements(By.CSS_SELECTOR, "div.symbol-name")
+        if not symbol_elements:
+            continue
+
+        symbol = clean(symbol_elements[0].text).upper()
+        if not SYMBOL_RE.fullmatch(symbol) or symbol.isdigit():
+            continue
+
+        # The first fixed-left cell is the Rank cell in the supplied CoinGlass DOM:
+        # <td class="ant-table-cell ant-table-cell-fix-left"><div>1</div></td>
+        rank = None
+        cells = row.find_elements(By.CSS_SELECTOR, "td")
+        for cell in cells:
+            classes = cell.get_attribute("class") or ""
+            if "ant-table-cell-fix-left" not in classes:
+                continue
+            text = clean(cell.text)
+            if RANK_RE.fullmatch(text):
+                rank = int(text)
+                break
+
+        if rank is None:
+            continue
+
+        # Independent validation: CoinGlass puts the symbol in /currencies/SYMBOL.
+        links = row.find_elements(By.CSS_SELECTOR, "a[href^='/currencies/']")
+        if links:
+            href = links[0].get_attribute("href") or ""
+            href_symbol = href.rstrip("/").split("/currencies/")[-1].upper()
+            if href_symbol and href_symbol != symbol:
                 continue
 
-            header_selectors = ["thead tr th", "[role='columnheader']", "thead th"]
-            headers = []
-            for selector in header_selectors:
-                headers = [
-                    clean_value(x.text)
-                    for x in table.find_elements(By.CSS_SELECTOR, selector)
-                    if x.is_displayed() and clean_value(x.text)
-                ]
-                if headers:
-                    break
+        item = (rank, symbol)
+        if item not in results:
+            results.append(item)
 
-            coin_index = None
-            for i, header in enumerate(headers):
-                normalized = re.sub(r"[^a-z]", "", header.lower())
-                if normalized in {"coin", "symbol", "coinsymbol", "coinname"}:
-                    coin_index = i
-                    break
-
-            if coin_index is None:
-                continue
-
-            row_selectors = ["tbody tr", "[role='row']"]
-            rows = []
-            for selector in row_selectors:
-                rows = [
-                    r for r in table.find_elements(By.CSS_SELECTOR, selector)
-                    if r.is_displayed()
-                ]
-                if rows:
-                    break
-
-            results = []
-            for row in rows:
-                cells = [
-                    clean_value(x.text)
-                    for x in row.find_elements(By.CSS_SELECTOR, "td, [role='cell']")
-                ]
-                cells = [x for x in cells if x]
-
-                if coin_index >= len(cells):
-                    continue
-
-                symbol = cells[coin_index]
-                if not SYMBOL_RE.fullmatch(symbol) or symbol.isdigit():
-                    continue
-
-                # In the CoinGlass table the Rank column is immediately
-                # before the Coin column. Read that exact cell instead of
-                # using the position in our extracted Python list.
-                rank = None
-                if coin_index > 0 and re.fullmatch(r"\d{1,4}", cells[coin_index - 1]):
-                    rank = int(cells[coin_index - 1])
-
-                if rank is None:
-                    # Some layouts expose the rank as the first cell.
-                    for candidate in cells[:coin_index]:
-                        if re.fullmatch(r"\d{1,4}", candidate):
-                            rank = int(candidate)
-                            break
-
-                if rank is None:
-                    continue
-
-                item = (rank, symbol.upper())
-                if item not in results:
-                    results.append(item)
-
-            if len(results) >= COINS_PER_PAGE:
-                results.sort(key=lambda item: item[0])
-                return results
-
-    # Do not guess from arbitrary page text. If the table/header structure
-    # changes, fail loudly so a bad metric can never be reported as a coin.
-    return []
+    results.sort(key=lambda item: item[0])
+    return results
 
 
 def click_page(driver, page_number):
@@ -133,6 +92,15 @@ def click_page(driver, page_number):
     return False
 
 
+def wait_for_page_change(driver, old_ranks):
+    def changed(d):
+        current = extract_ranked_coins(d)
+        current_ranks = tuple(x[0] for x in current[:COINS_PER_PAGE])
+        return current_ranks and current_ranks != old_ranks
+
+    WebDriverWait(driver, 20).until(changed)
+
+
 def main():
     options = Options()
     options.add_argument("--headless=new")
@@ -150,25 +118,36 @@ def main():
         time.sleep(8)
 
         page1 = extract_ranked_coins(driver)
-        if not page1:
+        if len(page1) < COINS_PER_PAGE:
             snapshot(driver)
-            raise RuntimeError("CoinGlass table was not detected")
+            raise RuntimeError(
+                f"CoinGlass ranked rows not detected: found {len(page1)} valid rows"
+            )
 
         print(f"PAGE 1 - FIRST {COINS_PER_PAGE} COINS:")
         for rank, symbol in page1[:COINS_PER_PAGE]:
             print(f"{rank}. {symbol}")
 
+        old_ranks = tuple(x[0] for x in page1[:COINS_PER_PAGE])
+
         if not click_page(driver, 2):
             snapshot(driver, "coinglass_pagination_debug")
             raise RuntimeError("Could not find CoinGlass page 2 control")
 
-        time.sleep(5)
+        wait_for_page_change(driver, old_ranks)
+        time.sleep(1)
+
         page2 = extract_ranked_coins(driver)
-        if not page2:
+        if len(page2) < COINS_PER_PAGE:
             snapshot(driver, "coinglass_page2_debug")
             raise RuntimeError(
-                "Page 2 selected, but ranked coin rows could not be extracted"
+                f"Page 2 selected, but only {len(page2)} valid ranked rows were extracted"
             )
+
+        new_ranks = tuple(x[0] for x in page2[:COINS_PER_PAGE])
+        if new_ranks == old_ranks:
+            snapshot(driver, "coinglass_page2_unchanged_debug")
+            raise RuntimeError("Page 2 did not produce a different ranked row set")
 
         print(f"PAGE 2 - FIRST {COINS_PER_PAGE} COINS:")
         for rank, symbol in page2[:COINS_PER_PAGE]:
