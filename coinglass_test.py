@@ -2,7 +2,6 @@ import json
 import re
 import time
 from pathlib import Path
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -26,8 +25,6 @@ def extract_ranked_coins(driver):
     seen = set()
     for symbol_element in driver.find_elements(By.CSS_SELECTOR, "div.symbol-name"):
         try:
-            if not symbol_element.is_displayed():
-                continue
             symbol = clean(symbol_element.text).upper()
             if not SYMBOL_RE.fullmatch(symbol):
                 continue
@@ -56,8 +53,34 @@ def extract_ranked_coins(driver):
     return sorted(results, key=lambda item: item[0])
 
 
-def click_next_page(driver):
-    selectors = ["li.ant-pagination-next", "li.rc-pagination-next", "li[title='Next Page']"]
+def wait_for_rows(driver):
+    WebDriverWait(driver, 45).until(lambda d: len(extract_ranked_coins(d)) >= 3)
+
+
+def click_page_number(driver, page_number):
+    selectors = [
+        f"li.rc-pagination-item-{page_number} button",
+        f"li.rc-pagination-item[title='{page_number}'] button",
+        f"li.rc-pagination-item-{page_number}",
+    ]
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if el.is_displayed() and el.is_enabled():
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                    driver.execute_script("arguments[0].click();", el)
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def click_next(driver):
+    selectors = [
+        "li.ant-pagination-next",
+        "li.rc-pagination-next",
+        "li[title='Next Page']",
+    ]
     for selector in selectors:
         for el in driver.find_elements(By.CSS_SELECTOR, selector):
             try:
@@ -70,13 +93,13 @@ def click_next_page(driver):
                 driver.execute_script("arguments[0].click();", el)
                 return True
             except Exception:
-                continue
+                pass
     return False
 
 
-def wait_for_rank_change(driver, old_first_rank):
-    WebDriverWait(driver, 30).until(
-        lambda d: (current := extract_ranked_coins(d)) and current[0][0] != old_first_rank
+def wait_for_page_change(driver, old_first):
+    WebDriverWait(driver, 45).until(
+        lambda d: (current := extract_ranked_coins(d)) and current[0] != old_first
     )
 
 
@@ -88,35 +111,31 @@ def main():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     driver = webdriver.Chrome(options=options)
-    wait = WebDriverWait(driver, 30)
+
     all_coins = []
     page_records = []
-    seen_ranks = set()
+    seen_symbols = set()
+
     try:
         print("OPENING CoinGlass...")
         driver.get(URL)
-        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(8)
+        WebDriverWait(driver, 45).until(lambda d: d.execute_script("return document.readyState") == "complete")
+        wait_for_rows(driver)
+
         page_number = 1
-        previous_last_rank = None
         while True:
             page = extract_ranked_coins(driver)
-            if not page:
+            if len(page) < 3:
                 snapshot(driver, f"coinglass_page_{page_number}_debug")
-                raise RuntimeError(f"CoinGlass page {page_number}: no valid Rank + Coin rows detected")
+                raise RuntimeError(f"CoinGlass page {page_number}: only {len(page)} valid Rank + Coin rows detected")
 
-            # Do not assume 20 rows per page: CoinGlass can return a shorter final page.
-            expected_first_rank = 1 if page_number == 1 else previous_last_rank + 1
-            if page[0][0] != expected_first_rank:
+            # Rank continuity is checked against the previous page, not a hard-coded 20 rows.
+            expected_first = 1 if page_number == 1 else previous_last_rank + 1
+            if page[0][0] != expected_first:
                 snapshot(driver, f"coinglass_page_{page_number}_rank_debug")
-                raise RuntimeError(
-                    f"CoinGlass page {page_number}: expected first rank {expected_first_rank}, found {page[0][0]}"
-                )
+                raise RuntimeError(f"CoinGlass page {page_number}: expected first rank {expected_first}, found {page[0][0]}")
 
-            for rank, symbol in page:
-                if rank not in seen_ranks:
-                    seen_ranks.add(rank)
-                    all_coins.append({"rank": rank, "symbol": symbol})
+            print(f"PAGE {page_number}: {len(page)} coins (ranks {page[0][0]}-{page[-1][0]})")
             page_records.append({
                 "page": page_number,
                 "count": len(page),
@@ -124,23 +143,42 @@ def main():
                 "last_rank": page[-1][0],
                 "coins": [{"rank": r, "symbol": s} for r, s in page],
             })
-            print(f"PAGE {page_number}: {len(page)} coins (ranks {page[0][0]}-{page[-1][0]})")
+
+            for rank, symbol in page:
+                if symbol not in seen_symbols:
+                    seen_symbols.add(symbol)
+                    all_coins.append({"rank": rank, "symbol": symbol})
+
             previous_last_rank = page[-1][0]
-            old_first_rank = page[0][0]
-            if not click_next_page(driver):
+            old_first = page[0]
+
+            # First try the exact page-number control. If it is no longer visible,
+            # use the same Next control that was used successfully in the 2-page test.
+            target_page = page_number + 1
+            clicked = click_page_number(driver, target_page)
+            if not clicked:
+                clicked = click_next(driver)
+            if not clicked:
                 break
+
             try:
-                wait_for_rank_change(driver, old_first_rank)
+                wait_for_page_change(driver, old_first)
             except Exception:
-                snapshot(driver, f"coinglass_page_{page_number + 1}_change_debug")
+                snapshot(driver, f"coinglass_page_{target_page}_change_debug")
                 raise RuntimeError(f"Pagination clicked after page {page_number}, but ranked rows did not change")
+
             page_number += 1
             if page_number > 1000:
                 raise RuntimeError("Aborted: pagination exceeded 1000 pages")
 
-        if not all_coins:
-            raise RuntimeError("No CoinGlass coins were extracted")
-        output = {"source": "CoinGlass", "url": URL, "total_coins": len(all_coins), "total_pages": len(page_records), "coins": all_coins, "pages": page_records}
+        output = {
+            "source": "CoinGlass",
+            "url": URL,
+            "total_coins": len(all_coins),
+            "total_pages": len(page_records),
+            "coins": all_coins,
+            "pages": page_records,
+        }
         Path("coinglass_coins.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
         print("\nCOINGLASS TOTAL:", len(all_coins))
         print("COINGLASS PAGES:", len(page_records))
