@@ -1,5 +1,6 @@
 import time
 import re
+from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -8,85 +9,44 @@ from selenium.webdriver.support.ui import WebDriverWait
 URL = "https://www.coinglass.com/"
 PAGES_TO_TEST = 2
 COINS_PER_PAGE = 3
-
-# Common date/number patterns are deliberately rejected when choosing a coin column.
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def table_coin_candidates(driver):
-    """Find visible tables whose header contains a coin/symbol-like column."""
-    candidates = []
-    for table in driver.find_elements(By.CSS_SELECTOR, "table"):
-        try:
-            if not table.is_displayed():
-                continue
-            headers = [x.text.strip().lower() for x in table.find_elements(By.CSS_SELECTOR, "thead th")]
-            rows = table.find_elements(By.CSS_SELECTOR, "tbody tr")
-            if not rows:
-                continue
-            coin_indexes = [i for i, h in enumerate(headers) if h in {"coin", "symbol", "name"} or "coin" in h or "symbol" in h]
-            if coin_indexes:
-                candidates.append((table, coin_indexes[0]))
-        except Exception:
-            continue
-    return candidates
+def snapshot(driver):
+    Path("coinglass_debug.html").write_text(driver.page_source, encoding="utf-8")
+    driver.save_screenshot("coinglass_debug.png")
+    print("DEBUG_URL=", driver.current_url)
+    print("DEBUG_TITLE=", driver.title)
+    print("DEBUG_BODY_START=")
+    print(driver.find_element(By.TAG_NAME, "body").text[:5000])
 
 
 def extract_coin_names(driver):
-    candidates = table_coin_candidates(driver)
-    for table, coin_index in candidates:
+    # First inspect all visible rows, because CoinGlass may render the grid without native table tags.
+    selectors = [
+        "table tbody tr",
+        "[role='row']",
+        "div[class*='table'] [class*='row']",
+        "div[class*='Table'] [class*='row']",
+    ]
+    for selector in selectors:
+        rows = driver.find_elements(By.CSS_SELECTOR, selector)
         values = []
-        for row in table.find_elements(By.CSS_SELECTOR, "tbody tr"):
-            cells = row.find_elements(By.CSS_SELECTOR, "td")
-            if len(cells) <= coin_index:
+        for row in rows:
+            if not row.is_displayed():
                 continue
-            text = cells[coin_index].text.strip()
-            if text and not DATE_RE.match(text):
-                # Keep the first token; CoinGlass can render logo/name pairs in one cell.
-                value = text.splitlines()[0].strip()
-                if value and value not in values:
-                    values.append(value)
+            text = row.text.strip()
+            if not text:
+                continue
+            lines = [x.strip() for x in text.splitlines() if x.strip()]
+            for value in lines[:3]:
+                if value and not DATE_RE.match(value) and len(value) <= 30:
+                    if re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value) and value not in values:
+                        values.append(value)
+                        break
         if values:
             return values
     return []
-
-
-def click_next(driver):
-    """Find pagination controls using semantic attributes/classes, not only visible text."""
-    selectors = [
-        "button[aria-label*='next' i]",
-        "button[title*='next' i]",
-        "a[aria-label*='next' i]",
-        "a[title*='next' i]",
-        "button[class*='next' i]",
-        "a[class*='next' i]",
-    ]
-    for selector in selectors:
-        for el in driver.find_elements(By.CSS_SELECTOR, selector):
-            try:
-                if not el.is_displayed() or el.get_attribute("disabled") is not None:
-                    continue
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                driver.execute_script("arguments[0].click();", el)
-                return True
-            except Exception:
-                pass
-
-    # Fallback: inspect buttons/links in the visible pagination area for a right-arrow glyph.
-    for el in driver.find_elements(By.CSS_SELECTOR, "button, a"):
-        try:
-            if not el.is_displayed() or el.get_attribute("disabled") is not None:
-                continue
-            text = (el.text or "").strip().lower()
-            aria = (el.get_attribute("aria-label") or "").strip().lower()
-            title = (el.get_attribute("title") or "").strip().lower()
-            if text in {">", "›", "»", "→"} or any(x in (text, aria, title) for x in ("next", "next page")):
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                driver.execute_script("arguments[0].click();", el)
-                return True
-        except Exception:
-            pass
-    return False
 
 
 def main():
@@ -95,35 +55,41 @@ def main():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
 
     driver = webdriver.Chrome(options=options)
     wait = WebDriverWait(driver, 30)
-
     try:
         print("OPENING CoinGlass...")
         driver.get(URL)
         wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(6)
+        time.sleep(8)
 
-        previous_values = None
-        for page in range(1, PAGES_TO_TEST + 1):
-            wait.until(lambda d: len(extract_coin_names(d)) > 0)
-            time.sleep(1)
-            values = extract_coin_names(driver)
-            if not values:
-                raise RuntimeError("Could not identify the Coin/Symbol column in the visible CoinGlass table")
+        values = extract_coin_names(driver)
+        if not values:
+            print("Coin/Symbol rows not detected; collecting diagnostic artifacts...")
+            snapshot(driver)
+            raise RuntimeError("CoinGlass table was not detected; diagnostic artifacts were generated")
 
-            print(f"PAGE {page} - FIRST {COINS_PER_PAGE} COINS:")
-            for i, value in enumerate(values[:COINS_PER_PAGE], 1):
-                print(f"{i}. {value}")
+        print(f"PAGE 1 - FIRST {COINS_PER_PAGE} COINS:")
+        for i, value in enumerate(values[:COINS_PER_PAGE], 1):
+            print(f"{i}. {value}")
 
-            if page < PAGES_TO_TEST:
-                before = tuple(values[:10])
-                if not click_next(driver):
-                    raise RuntimeError("Could not find the CoinGlass pagination Next control")
-                wait.until(lambda d: tuple(extract_coin_names(d)[:10]) != before)
+        # Diagnostic first: report all candidate pagination controls and attributes.
+        controls = driver.find_elements(By.CSS_SELECTOR, "button, a")
+        print("PAGINATION_CANDIDATES=")
+        for el in controls:
+            try:
+                txt = (el.text or "").strip()
+                aria = el.get_attribute("aria-label") or ""
+                title = el.get_attribute("title") or ""
+                cls = el.get_attribute("class") or ""
+                if txt in {">", "›", "»", "→"} or "next" in (txt + aria + title + cls).lower():
+                    print(txt, "|", aria, "|", title, "|", cls[:200])
+            except Exception:
+                pass
 
-        print("TEST_STATUS=SUCCESS")
+        print("TEST_STATUS=PAGE1_DETECTED")
     finally:
         driver.quit()
 
