@@ -1,0 +1,22 @@
+name: CoinGlass Selenium Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  coinglass-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install selenium
+
+      - name: Run CoinGlass Selenium test
+        run: python coinglass_selenium_test.py
