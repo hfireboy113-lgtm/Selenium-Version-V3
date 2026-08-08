@@ -20,8 +20,8 @@ def clean_value(value):
     return re.sub(r"\s+", " ", value.strip())
 
 
-def extract_coin_names(driver):
-    """Extract the value from the Coin/Symbol column, not the ranking column."""
+def extract_coin_rows(driver):
+    """Extract (rank, coin) from the Coin/Symbol column, not by row order."""
     table_selectors = [
         "table",
         "[role='table']",
@@ -35,8 +35,6 @@ def extract_coin_names(driver):
             if not table.is_displayed():
                 continue
 
-            # Prefer a real/semantic header so column position is determined
-            # from CoinGlass' actual column definition rather than row order.
             header_selectors = [
                 "thead tr th",
                 "[role='columnheader']",
@@ -81,17 +79,21 @@ def extract_coin_names(driver):
                 cells = [x for x in cells if x]
                 if coin_index < len(cells):
                     value = cells[coin_index]
-                    # A valid symbol should not be a pure ranking number.
                     if value and not value.isdigit() and re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value):
-                        if value not in values:
-                            values.append(value)
+                        if value not in [coin for _, coin in values]:
+                            rank = cells[0] if cells and cells[0].isdigit() else "?"
+                            values.append((rank, value))
 
             if values:
                 return values
 
-    # Fallback for CoinGlass layouts where headers are not exposed as
-    # semantic table cells. Never accept a pure ranking number as a coin.
-    selectors = ["table tbody tr", "[role='row']", "div[class*='table'] [class*='row']", "div[class*='Table'] [class*='row']"]
+    # Fallback for layouts where headers are not exposed semantically.
+    selectors = [
+        "table tbody tr",
+        "[role='row']",
+        "div[class*='table'] [class*='row']",
+        "div[class*='Table'] [class*='row']",
+    ]
     for selector in selectors:
         rows = driver.find_elements(By.CSS_SELECTOR, selector)
         values = []
@@ -99,7 +101,11 @@ def extract_coin_names(driver):
             if not row.is_displayed():
                 continue
             lines = [clean_value(x) for x in row.text.splitlines() if clean_value(x)]
-            for value in lines[:6]:
+            if not lines:
+                continue
+
+            rank = lines[0] if lines[0].isdigit() else "?"
+            for value in lines[1:7]:
                 if (
                     value
                     and not DATE_RE.match(value)
@@ -107,8 +113,8 @@ def extract_coin_names(driver):
                     and len(value) <= 30
                     and re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value)
                 ):
-                    if value not in values:
-                        values.append(value)
+                    if value not in [coin for _, coin in values]:
+                        values.append((rank, value))
                     break
         if values:
             return values
@@ -132,17 +138,15 @@ def main():
         wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
         time.sleep(8)
 
-        page1 = extract_coin_names(driver)
+        page1 = extract_coin_rows(driver)
         if not page1:
             snapshot(driver)
             raise RuntimeError("CoinGlass table was not detected")
 
         print(f"PAGE 1 - FIRST {COINS_PER_PAGE} COINS:")
-        for i, value in enumerate(page1[:COINS_PER_PAGE], 1):
-            print(f"{i}. {value}")
+        for rank, value in page1[:COINS_PER_PAGE]:
+            print(f"{rank}. {value}")
 
-        # CoinGlass pagination is rc-pagination. Page 2 is rendered as:
-        # <li title="2" class="rc-pagination-item rc-pagination-item-2"><button>2</button></li>
         page2_selectors = [
             "li.rc-pagination-item-2 button",
             "li.rc-pagination-item[title='2'] button",
@@ -167,14 +171,14 @@ def main():
             raise RuntimeError("Could not find CoinGlass page 2 control")
 
         time.sleep(5)
-        page2 = extract_coin_names(driver)
+        page2 = extract_coin_rows(driver)
         if not page2:
             snapshot(driver, "coinglass_page2_debug")
             raise RuntimeError("Page 2 selected, but coin rows could not be extracted")
 
         print(f"PAGE 2 - FIRST {COINS_PER_PAGE} COINS:")
-        for i, value in enumerate(page2[:COINS_PER_PAGE], 1):
-            print(f"{i}. {value}")
+        for rank, value in page2[:COINS_PER_PAGE]:
+            print(f"{rank}. {value}")
 
         print("TEST_STATUS=SUCCESS")
     finally:
