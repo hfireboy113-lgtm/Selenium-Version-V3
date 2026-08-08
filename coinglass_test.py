@@ -115,6 +115,7 @@ def main():
     all_coins = []
     page_records = []
     seen_symbols = set()
+    previous_last_rank = None
 
     try:
         print("OPENING CoinGlass...")
@@ -129,21 +130,13 @@ def main():
                 snapshot(driver, f"coinglass_page_{page_number}_debug")
                 raise RuntimeError(f"CoinGlass page {page_number}: only {len(page)} valid Rank + Coin rows detected")
 
-            # Rank continuity is checked against the previous page, not a hard-coded 20 rows.
             expected_first = 1 if page_number == 1 else previous_last_rank + 1
             if page[0][0] != expected_first:
                 snapshot(driver, f"coinglass_page_{page_number}_rank_debug")
                 raise RuntimeError(f"CoinGlass page {page_number}: expected first rank {expected_first}, found {page[0][0]}")
 
             print(f"PAGE {page_number}: {len(page)} coins (ranks {page[0][0]}-{page[-1][0]})")
-            page_records.append({
-                "page": page_number,
-                "count": len(page),
-                "first_rank": page[0][0],
-                "last_rank": page[-1][0],
-                "coins": [{"rank": r, "symbol": s} for r, s in page],
-            })
-
+            page_records.append({"page": page_number,"count": len(page),"first_rank": page[0][0],"last_rank": page[-1][0],"coins":[{"rank":r,"symbol":s} for r,s in page]})
             for rank, symbol in page:
                 if symbol not in seen_symbols:
                     seen_symbols.add(symbol)
@@ -151,34 +144,22 @@ def main():
 
             previous_last_rank = page[-1][0]
             old_first = page[0]
-
-            # First try the exact page-number control. If it is no longer visible,
-            # use the same Next control that was used successfully in the 2-page test.
             target_page = page_number + 1
             clicked = click_page_number(driver, target_page)
             if not clicked:
                 clicked = click_next(driver)
             if not clicked:
                 break
-
             try:
                 wait_for_page_change(driver, old_first)
             except Exception:
                 snapshot(driver, f"coinglass_page_{target_page}_change_debug")
                 raise RuntimeError(f"Pagination clicked after page {page_number}, but ranked rows did not change")
-
             page_number += 1
             if page_number > 1000:
                 raise RuntimeError("Aborted: pagination exceeded 1000 pages")
 
-        output = {
-            "source": "CoinGlass",
-            "url": URL,
-            "total_coins": len(all_coins),
-            "total_pages": len(page_records),
-            "coins": all_coins,
-            "pages": page_records,
-        }
+        output = {"source":"CoinGlass","url":URL,"total_coins":len(all_coins),"total_pages":len(page_records),"coins":all_coins,"pages":page_records}
         Path("coinglass_coins.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
         print("\nCOINGLASS TOTAL:", len(all_coins))
         print("COINGLASS PAGES:", len(page_records))
