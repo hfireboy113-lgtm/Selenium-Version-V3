@@ -130,13 +130,22 @@ def main():
                 snapshot(driver, f"coinglass_page_{page_number}_debug")
                 raise RuntimeError(f"CoinGlass page {page_number}: only {len(page)} valid Rank + Coin rows detected")
 
-            expected_first = 1 if page_number == 1 else previous_last_rank + 1
-            if page[0][0] != expected_first:
-                snapshot(driver, f"coinglass_page_{page_number}_rank_debug")
-                raise RuntimeError(f"CoinGlass page {page_number}: expected first rank {expected_first}, found {page[0][0]}")
+            # CoinGlass can contain a temporarily missing/invalid row, so ranks
+            # are not required to be perfectly contiguous. They only need to
+            # move forward from one page to the next.
+            if page_number == 1:
+                if page[0][0] <= 0:
+                    raise RuntimeError(f"CoinGlass page 1: invalid first rank {page[0][0]}")
+            else:
+                if page[0][0] <= previous_last_rank:
+                    snapshot(driver, f"coinglass_page_{page_number}_rank_debug")
+                    raise RuntimeError(
+                        f"CoinGlass page {page_number}: first rank {page[0][0]} is not after previous page last rank {previous_last_rank}"
+                    )
 
             print(f"PAGE {page_number}: {len(page)} coins (ranks {page[0][0]}-{page[-1][0]})")
-            page_records.append({"page": page_number,"count": len(page),"first_rank": page[0][0],"last_rank": page[-1][0],"coins":[{"rank":r,"symbol":s} for r,s in page]})
+            page_records.append({"page": page_number, "count": len(page), "first_rank": page[0][0], "last_rank": page[-1][0], "coins": [{"rank": r, "symbol": s} for r, s in page]})
+
             for rank, symbol in page:
                 if symbol not in seen_symbols:
                     seen_symbols.add(symbol)
@@ -159,7 +168,7 @@ def main():
             if page_number > 1000:
                 raise RuntimeError("Aborted: pagination exceeded 1000 pages")
 
-        output = {"source":"CoinGlass","url":URL,"total_coins":len(all_coins),"total_pages":len(page_records),"coins":all_coins,"pages":page_records}
+        output = {"source": "CoinGlass", "url": URL, "total_coins": len(all_coins), "total_pages": len(page_records), "coins": all_coins, "pages": page_records}
         Path("coinglass_coins.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
         print("\nCOINGLASS TOTAL:", len(all_coins))
         print("COINGLASS PAGES:", len(page_records))
