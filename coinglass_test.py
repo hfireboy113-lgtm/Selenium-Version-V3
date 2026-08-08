@@ -7,7 +7,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 URL = "https://www.coinglass.com/"
-PAGES_TO_TEST = 2
 COINS_PER_PAGE = 3
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -22,7 +21,6 @@ def snapshot(driver):
 
 
 def extract_coin_names(driver):
-    # First inspect all visible rows, because CoinGlass may render the grid without native table tags.
     selectors = [
         "table tbody tr",
         "[role='row']",
@@ -35,11 +33,8 @@ def extract_coin_names(driver):
         for row in rows:
             if not row.is_displayed():
                 continue
-            text = row.text.strip()
-            if not text:
-                continue
-            lines = [x.strip() for x in text.splitlines() if x.strip()]
-            for value in lines[:3]:
+            lines = [x.strip() for x in row.text.splitlines() if x.strip()]
+            for value in lines[:4]:
                 if value and not DATE_RE.match(value) and len(value) <= 30:
                     if re.fullmatch(r"[A-Za-z0-9._-]{2,20}", value) and value not in values:
                         values.append(value)
@@ -47,6 +42,68 @@ def extract_coin_names(driver):
         if values:
             return values
     return []
+
+
+def control_signature(el):
+    return " | ".join([
+        (el.text or "").strip(),
+        el.get_attribute("aria-label") or "",
+        el.get_attribute("title") or "",
+        el.get_attribute("class") or "",
+        el.get_attribute("data-testid") or "",
+    ]).lower()
+
+
+def find_next_control(driver):
+    # First try semantic selectors.
+    selectors = [
+        "button[aria-label*='next' i]",
+        "button[title*='next' i]",
+        "a[aria-label*='next' i]",
+        "a[title*='next' i]",
+        "button[data-testid*='next' i]",
+        "[role='button'][aria-label*='next' i]",
+    ]
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            if el.is_displayed() and el.is_enabled():
+                return el
+
+    # Then inspect all clickable controls for a right-arrow / next-page signature.
+    for el in driver.find_elements(By.CSS_SELECTOR, "button, a, [role='button']"):
+        try:
+            if not el.is_displayed() or not el.is_enabled():
+                continue
+            sig = control_signature(el)
+            text = (el.text or "").strip()
+            if text in {">", "›", "»", "→"} or "next page" in sig or re.search(r"\bnext\b", sig):
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def click_next_and_wait(driver, before_values):
+    control = find_next_control(driver)
+    if control is None:
+        print("PAGINATION_CANDIDATES=")
+        for el in driver.find_elements(By.CSS_SELECTOR, "button, a, [role='button']"):
+            try:
+                if el.is_displayed():
+                    print(control_signature(el)[:500])
+            except Exception:
+                pass
+        return False
+
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", control)
+    driver.execute_script("arguments[0].click();", control)
+
+    def changed(d):
+        current = extract_coin_names(d)
+        return bool(current) and tuple(current[:10]) != tuple(before_values[:10])
+
+    WebDriverWait(driver, 20).until(changed)
+    return True
 
 
 def main():
@@ -67,7 +124,6 @@ def main():
 
         values = extract_coin_names(driver)
         if not values:
-            print("Coin/Symbol rows not detected; collecting diagnostic artifacts...")
             snapshot(driver)
             raise RuntimeError("CoinGlass table was not detected; diagnostic artifacts were generated")
 
@@ -75,21 +131,17 @@ def main():
         for i, value in enumerate(values[:COINS_PER_PAGE], 1):
             print(f"{i}. {value}")
 
-        # Diagnostic first: report all candidate pagination controls and attributes.
-        controls = driver.find_elements(By.CSS_SELECTOR, "button, a")
-        print("PAGINATION_CANDIDATES=")
-        for el in controls:
-            try:
-                txt = (el.text or "").strip()
-                aria = el.get_attribute("aria-label") or ""
-                title = el.get_attribute("title") or ""
-                cls = el.get_attribute("class") or ""
-                if txt in {">", "›", "»", "→"} or "next" in (txt + aria + title + cls).lower():
-                    print(txt, "|", aria, "|", title, "|", cls[:200])
-            except Exception:
-                pass
+        before = values[:10]
+        if not click_next_and_wait(driver, before):
+            snapshot(driver)
+            raise RuntimeError("Could not identify/click the CoinGlass pagination control")
 
-        print("TEST_STATUS=PAGE1_DETECTED")
+        values2 = extract_coin_names(driver)
+        print(f"PAGE 2 - FIRST {COINS_PER_PAGE} COINS:")
+        for i, value in enumerate(values2[:COINS_PER_PAGE], 1):
+            print(f"{i}. {value}")
+
+        print("TEST_STATUS=SUCCESS")
     finally:
         driver.quit()
 
